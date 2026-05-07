@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deep Stock Analysis</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3347;
+      --accent: #4f8ef7;
+      --green: #26a69a;
+      --red: #ef5350;
+      --yellow: #ffa726;
+      --text: #e0e4f0;
+      --muted: #7b82a0;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    header {
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px;
+      background: var(--surface);
+    }
+    .logo { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    .logo span { color: var(--accent); }
+    .logo-sub { color: var(--muted); font-size: 13px; }
+
+    /* ── 검색 영역 ── */
+    .search-wrap {
+      max-width: 700px;
+      margin: 52px auto 0;
+      padding: 0 20px;
+      text-align: center;
+    }
+    .search-wrap h2 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    .search-wrap p { color: var(--muted); margin-bottom: 28px; font-size: 15px; }
+
+    .search-outer { position: relative; }
+    .search-box {
+      display: flex; gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px 6px 6px 18px;
+      transition: border-color .2s;
+    }
+    .search-box:focus-within { border-color: var(--accent); }
+    .search-box input {
+      flex: 1; background: none; border: none; outline: none;
+      color: var(--text); font-size: 16px;
+    }
+    .search-box input::placeholder { color: var(--muted); }
+    .search-box button {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 8px; padding: 10px 22px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      transition: background .2s; white-space: nowrap;
+    }
+    .search-box button:hover { background: #3a7ae8; }
+    .search-box button:disabled { background: var(--border); cursor: not-allowed; }
+
+    /* 자동완성 드롭다운 */
+    #autocomplete {
+      position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+      z-index: 100;
+      overflow: hidden;
+      display: none;
+    }
+    .ac-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 16px;
+      cursor: pointer;
+      transition: background .12s;
+      gap: 12px;
+    }
+    .ac-item:hover, .ac-item.active { background: var(--surface2); }
+    .ac-item:not(:last-child) { border-bottom: 1px solid var(--border); }
+    .ac-left { display: flex; align-items: center; gap: 10px; }
+    .ac-ticker {
+      font-weight: 700; font-size: 14px; color: var(--accent);
+      min-width: 72px;
+    }
+    .ac-name { font-size: 13px; color: var(--text); }
+    .ac-right { display: flex; gap: 6px; }
+    .ac-tag {
+      font-size: 11px; padding: 2px 7px; border-radius: 4px;
+      background: var(--surface2); color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .examples { margin-top: 14px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    .examples span {
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 5px 14px; border-radius: 20px; font-size: 13px;
+      cursor: pointer; color: var(--muted); transition: all .15s;
+    }
+    .examples span:hover { border-color: var(--accent); color: var(--accent); }
+
+    #error-msg {
+      max-width: 700px; margin: 20px auto;
+      padding: 14px 20px;
+      background: rgba(239,83,80,.12); border: 1px solid rgba(239,83,80,.3);
+      border-radius: var(--radius); color: var(--red); display: none;
+    }
+
+    #loading { text-align: center; padding: 60px 20px; display: none; }
+    .spinner {
+      width: 42px; height: 42px;
+      border: 3px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin .7s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── 리포트 ── */
+    #report { display: none; max-width: 1120px; margin: 32px auto 60px; padding: 0 20px; }
+
+    .report-header {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px 28px;
+      display: flex; align-items: flex-start;
+      justify-content: space-between; flex-wrap: wrap; gap: 16px;
+      margin-bottom: 20px;
+    }
+    .stock-name { font-size: 26px; font-weight: 700; }
+    .ticker-badge {
+      display: inline-block; background: var(--accent); color: #fff;
+      font-size: 12px; font-weight: 700; padding: 3px 10px;
+      border-radius: 6px; margin-left: 10px; vertical-align: middle;
+    }
+    .price-block { text-align: right; }
+    .current-price { font-size: 32px; font-weight: 700; }
+    .change-val { font-size: 16px; font-weight: 600; }
+    .up { color: var(--green); } .down { color: var(--red); } .neutral { color: var(--muted); }
+    .meta-line { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(2,1fr); } }
+    .kpi {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 18px;
+    }
+    .kpi .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+    .kpi .val { font-size: 18px; font-weight: 700; }
+    .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px;
+    }
+    .card-title {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .8px; color: var(--muted);
+      margin-bottom: 16px; padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sec-num {
+      background: var(--accent); color: #fff; font-size: 11px;
+      font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-right: 8px;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    td { padding: 10px 12px; border-bottom: 1px solid rgba(46,51,71,.6); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+
+    .rsi-bar-track {
+      height: 8px; border-radius: 4px;
+      background: linear-gradient(to right, #ef5350 0%, #ffa726 15%, #26a69a 30%, #26a69a 70%, #ffa726 85%, #ef5350 100%);
+      position: relative; margin: 10px 0 6px;
+    }
+    .rsi-bar-marker {
+      position: absolute; top: -4px;
+      width: 16px; height: 16px;
+      background: #fff; border: 2px solid var(--accent);
+      border-radius: 50%; transform: translateX(-50%); transition: left .4s;
+    }
+    .rsi-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+
+    .bb-tag {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    }
+    .bb-upper-break { background: rgba(239,83,80,.15); color: var(--red); }
+    .bb-upper-zone  { background: rgba(38,166,154,.15); color: var(--green); }
+    .bb-lower-zone  { background: rgba(255,167,38,.15); color: var(--yellow); }
+    .bb-lower-break { background: rgba(239,83,80,.15); color: var(--red); }
+
+    .vol-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin-top: 8px; }
+    .vol-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .4s; }
+    .vol-fill.high { background: var(--green); }
+    .vol-fill.very-high { background: var(--red); }
+
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+    .badge-buy  { background: rgba(38,166,154,.2); color: var(--green); }
+    .badge-hold { background: rgba(255,167,38,.2); color: var(--yellow); }
+    .badge-sell { background: rgba(239,83,80,.2); color: var(--red); }
+    .badge-neutral { background: var(--surface2); color: var(--muted); }
+
+    /* ── 뉴스 섹션 ── */
+    .news-list { display: flex; flex-direction: column; gap: 0; }
+    .news-item {
+      display: flex; gap: 16px; align-items: flex-start;
+      padding: 14px 0; border-bottom: 1px solid var(--border);
+    }
+    .news-item:last-child { border-bottom: none; }
+    .news-num {
+      flex-shrink: 0; width: 24px; height: 24px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: var(--muted); margin-top: 2px;
+    }
+    .news-body { flex: 1; min-width: 0; }
+    .news-title { font-size: 14px; line-height: 1.55; margin-bottom: 6px; }
+    .news-title a { color: var(--text); text-decoration: none; }
+    .news-title a:hover { color: var(--accent); }
+    .news-summary { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 6px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .news-meta { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+    .news-publisher { font-weight: 600; color: var(--accent); }
+    .news-date-badge {
+      background: var(--surface2); padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; color: var(--muted);
+    }
+
+    canvas { max-height: 280px; }
+
+    .btn-dl {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 8px; padding: 9px 18px;
+      font-size: 14px; cursor: pointer; transition: all .2s;
+    }
+    .btn-dl:hover { border-color: var(--accent); color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="logo">Deep<span>Stock</span> Analytics</div>
+    <div class="logo-sub">실시간 데이터 기반 심층 주식 분석</div>
+  </div>
+</header>
+
+<div class="search-wrap" id="search-section">
+  <h2>종목 심층 분석</h2>
+  <p>종목명 또는 티커를 입력하세요 (예: 테슬라, Tesla, TSLA, 삼성전자)</p>
+  <div class="search-outer">
+    <div class="search-box">
+      <input type="text" id="ticker-input" placeholder="종목명 또는 티커 검색..." autocomplete="off" />
+      <button id="analyze-btn" onclick="analyzeSelected()">분석하기</button>
+    </div>
+    <div id="autocomplete"></div>
+  </div>
+  <div class="examples">
+    <span onclick="quickSearch('Tesla')">테슬라</span>
+    <span onclick="quickSearch('Apple')">애플</span>
+    <span onclick="quickSearch('NVIDIA')">엔비디아</span>
+    <span onclick="quickSearch('삼성전자')">삼성전자</span>
+    <span onclick="quickSearch('SK하이닉스')">SK하이닉스</span>
+    <span onclick="quickSearch('NAVER')">네이버</span>
+    <span onclick="quickSearch('Microsoft')">마이크로소프트</span>
+    <span onclick="quickSearch('Meta')">메타</span>
+  </div>
+</div>
+
+<div id="error-msg"></div>
+<div id="loading"><div class="spinner"></div><p style="color:var(--muted)">데이터 수집 및 분석 중...</p></div>
+<div id="report"></div>
+
+<script>
+let currentData = null;
+let selectedTicker = '';
+let chartInstances = {};
+let acItems = [];
+let acIndex = -1;
+let searchTimer = null;
+
+/* ── 자동완성 ── */
+const input = document.getElementById('ticker-input');
+const acBox = document.getElementById('autocomplete');
+
+input.addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const q = input.value.trim();
+  if (!q) { hideAC(); return; }
+  searchTimer = setTimeout(() => fetchAC(q), 220);
+});
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); moveAC(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); moveAC(-1); }
+  else if (e.key === 'Enter') {
+    if (acIndex >= 0 && acItems[acIndex]) {
+      selectAC(acItems[acIndex]);
+    } else {
+      analyzeSelected();
+    }
+  } else if (e.key === 'Escape') hideAC();
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-outer')) hideAC();
+});
+
+async function fetchAC(q) {
+  try {
+    const res = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q })
+    });
+    const items = await res.json();
+    acItems = items;
+    acIndex = -1;
+    renderAC(items);
+  } catch {}
+}
+
+function renderAC(items) {
+  if (!items.length) { hideAC(); return; }
+  acBox.innerHTML = items.map((it, i) => `
+    <div class="ac-item" data-i="${i}" onclick="selectAC(acItems[${i}])">
+      <div class="ac-left">
+        <span class="ac-ticker">${it.ticker}</span>
+        <span class="ac-name">${it.name}</span>
+      </div>
+      <div class="ac-right">
+        <span class="ac-tag">${it.exchange}</span>
+        <span class="ac-tag">${it.type}</span>
+      </div>
+    </div>`).join('');
+  acBox.style.display = 'block';
+}
+
+function moveAC(dir) {
+  const nodes = acBox.querySelectorAll('.ac-item');
+  if (!nodes.length) return;
+  nodes[acIndex]?.classList.remove('active');
+  acIndex = Math.max(0, Math.min(nodes.length - 1, acIndex + dir));
+  nodes[acIndex].classList.add('active');
+}
+
+function selectAC(item) {
+  selectedTicker = item.ticker;
+  input.value = `${item.name}  (${item.ticker})`;
+  hideAC();
+  runAnalyze(item.ticker);
+}
+
+function hideAC() { acBox.style.display = 'none'; }
+
+function quickSearch(q) {
+  input.value = q;
+  selectedTicker = '';
+  fetchAC(q);
+}
+
+function analyzeSelected() {
+  const raw = input.value.trim();
+  if (!raw) return;
+  const ticker = selectedTicker || raw.toUpperCase().split(/\s/)[0];
+  runAnalyze(ticker);
+}
+
+/* ── 분석 실행 ── */
+async function runAnalyze(ticker) {
+  hideAC();
+  document.getElementById('error-msg').style.display = 'none';
+  document.getElementById('report').style.display = 'none';
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('analyze-btn').disabled = true;
+  Object.values(chartInstances).forEach(c => c.destroy());
+  chartInstances = {};
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker })
+    });
+    const data = await res.json();
+    if (data.error) showError(data.error);
+    else { currentData = data; renderReport(data); }
+  } catch { showError('서버 오류가 발생했습니다. 다시 시도해주세요.'); }
+  finally {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('analyze-btn').disabled = false;
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-msg');
+  el.textContent = msg; el.style.display = 'block';
+}
+
+/* ── 헬퍼 ── */
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso.substring(0, 10);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 60000);
+  if (diff < 60) return `${diff}분 전`;
+  if (diff < 1440) return `${Math.floor(diff/60)}시간 전`;
+  return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function recBadge(rec) {
+  const r = (rec||'').toLowerCase();
+  if (r.includes('buy')||r.includes('outperform')||r.includes('overweight')) return 'badge-buy';
+  if (r.includes('sell')||r.includes('underperform')||r.includes('underweight')) return 'badge-sell';
+  if (r.includes('hold')||r.includes('neutral')) return 'badge-hold';
+  return 'badge-neutral';
+}
+function bbClass(pos) {
+  if (pos.includes('상단 돌파')) return 'bb-upper-break';
+  if (pos.includes('중앙~상단')) return 'bb-upper-zone';
+  if (pos.includes('하단~중앙')) return 'bb-lower-zone';
+  if (pos.includes('하단 이탈')) return 'bb-lower-break';
+  return '';
+}
+
+/* ── 리포트 렌더링 ── */
+function renderReport(d) {
+  const cs = d.change_pct >= 0 ? 'up' : 'down';
+  const sign = d.change_pct >= 0 ? '+' : '';
+  const arrow = d.change_pct >= 0 ? '▲' : '▼';
+  const vRatioPct = Math.min(d.vol_ratio * 50, 100);
+  const vFillCls = d.vol_ratio >= 2 ? 'very-high' : d.vol_ratio >= 1.3 ? 'high' : '';
+
+  const newsHtml = d.news.length ? d.news.map((n, i) => `
+    <div class="news-item">
+      <div class="news-num">${i+1}</div>
+      <div class="news-body">
+        <div class="news-title"><a href="${n.url}" target="_blank" rel="noopener">${n.title || '(제목 없음)'}</a></div>
+        ${n.summary ? `<div class="news-summary">${n.summary}</div>` : ''}
+        <div class="news-meta">
+          <span class="news-publisher">${n.publisher || '알 수 없음'}</span>
+          <span>·</span>
+          <span class="news-date-badge">${fmtDate(n.published)}</span>
+        </div>
+      </div>
+    </div>`).join('')
+  : '<div style="color:var(--muted);font-size:14px;padding:12px 0">관련 뉴스 없음</div>';
+
+  const holdersHtml = d.top_holders.length ? `
+    <table>
+      <tr><th>기관명</th><th>보유 비율</th><th>보유 주식</th></tr>
+      ${d.top_holders.map(h => `
+      <tr>
+        <td style="font-size:12px">${h['Holder']||'-'}</td>
+        <td>${h['% Out']!==undefined?(h['% Out']*100).toFixed(2)+'%':'-'}</td>
+        <td>${h['Shares']?Number(h['Shares']).toLocaleString():'-'}</td>
+      </tr>`).join('')}
+    </table>` : '<div style="color:var(--muted);font-size:14px">데이터 없음</div>';
+
+  document.getElementById('report').innerHTML = `
+  <div class="report-header">
+    <div>
+      <div class="stock-name">${d.name}<span class="ticker-badge">${d.ticker}</span></div>
+      <div class="meta-line">시가총액 ${d.market_cap} &nbsp;·&nbsp; PER ${d.pe_ratio} &nbsp;·&nbsp; PBR ${d.pb_ratio} &nbsp;·&nbsp; 배당 ${d.dividend_yield}</div>
+      <div class="meta-line" style="margin-top:3px">분석 기준: ${d.generated_at}</div>
+    </div>
+    <div class="price-block">
+      <div class="current-price">${d.current_price}</div>
+      <div class="change-val ${cs}">${arrow} ${sign}${d.change_pct}%</div>
+      <div class="meta-line">52주 고 ${d.high_52w} &nbsp;·&nbsp; 저 ${d.low_52w}</div>
+    </div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="lbl">RSI (14)</div>
+      <div class="val ${d.rsi>=70?'down':d.rsi<=30?'up':''}">${d.rsi}</div>
+      <div class="sub">${d.rsi_signal}</div>
+    </div>
+    <div class="kpi">
+      <div class="lbl">거래량 비율</div>
+      <div class="val ${d.vol_ratio>=2?'down':d.vol_ratio>=1.3?'up':''}">${d.vol_ratio}x</div>
+      <div class="sub">20일 평균 대비</div>
+    </div>
+    <div class="kpi">
+      <div class="lbl">주간 등락</div>
+      <div class="val ${d.week_chg>=0?'up':'down'}">${d.week_chg>=0?'+':''}${d.week_chg}%</div>
+      <div class="sub">최근 5거래일</div>
+    </div>
+    <div class="kpi">
+      <div class="lbl">월간 등락</div>
+      <div class="val ${d.month_chg>=0?'up':'down'}">${d.month_chg>=0?'+':''}${d.month_chg}%</div>
+      <div class="sub">최근 22거래일</div>
+    </div>
+  </div>
+
+  <!-- 가격 차트 -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title"><span class="sec-num">1</span>가격 차트 &amp; 볼린저 밴드 (최근 60거래일)</div>
+    <canvas id="priceChart"></canvas>
+  </div>
+
+  <!-- RSI + BB -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title"><span class="sec-num">2</span>RSI 지표</div>
+      <div style="font-size:36px;font-weight:700;margin-bottom:8px" class="${d.rsi>=70?'down':d.rsi<=30?'up':''}">${d.rsi}</div>
+      <div class="rsi-bar-track"><div class="rsi-bar-marker" style="left:${d.rsi}%"></div></div>
+      <div class="rsi-labels"><span>0 (과매도)</span><span>30</span><span>70</span><span>100 (과매수)</span></div>
+      <div style="margin-top:12px;font-size:14px;color:var(--muted)">신호: <strong style="color:var(--text)">${d.rsi_signal}</strong></div>
+      <canvas id="rsiChart" style="margin-top:16px;max-height:150px"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="sec-num">2</span>볼린저 밴드</div>
+      <table>
+        <tr><th>구분</th><th>가격</th></tr>
+        <tr><td>상단 밴드</td><td>${d.bb_upper}</td></tr>
+        <tr><td>중앙선 (MA20)</td><td>${d.bb_mid}</td></tr>
+        <tr><td>하단 밴드</td><td>${d.bb_lower}</td></tr>
+        <tr><td>현재 위치</td><td><span class="bb-tag ${bbClass(d.bb_position)}">${d.bb_position}</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 수급 + 변동성 -->
+  <div class="grid-2" style="margin-top:16px">
+    <div class="card">
+      <div class="card-title"><span class="sec-num">3</span>거래량 분석</div>
+      <table>
+        <tr><th>항목</th><th>수치</th></tr>
+        <tr><td>당일 거래량</td><td>${d.vol_today}</td></tr>
+        <tr><td>20일 평균</td><td>${d.vol_20avg}</td></tr>
+        <tr><td>평균 대비</td><td class="${d.vol_ratio>=2?'down':d.vol_ratio>=1.3?'up':''}">${d.vol_ratio}배</td></tr>
+      </table>
+      <div class="vol-bar"><div class="vol-fill ${vFillCls}" style="width:${vRatioPct}%"></div></div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px">
+        ${d.vol_ratio>=2?'⚠️ 비정상적 거래량 폭증':d.vol_ratio>=1.3?'거래량 증가 — 관심 필요':'정상 범위'}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="sec-num">3</span>변동성 요약</div>
+      <table>
+        <tr><th>기간</th><th>등락률</th></tr>
+        <tr><td>주간 (5거래일)</td><td class="${d.week_chg>=0?'up':'down'}">${d.week_chg>=0?'+':''}${d.week_chg}%</td></tr>
+        <tr><td>월간 (22거래일)</td><td class="${d.month_chg>=0?'up':'down'}">${d.month_chg>=0?'+':''}${d.month_chg}%</td></tr>
+        <tr><td>52주 고가</td><td>${d.high_52w}</td></tr>
+        <tr><td>52주 저가</td><td>${d.low_52w}</td></tr>
+        <tr><td>공매도 비율</td><td>${d.short_pct}</td></tr>
+        <tr><td>공매도 커버 일수</td><td>${d.short_ratio} days</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 전문가 의견 + 주주 -->
+  <div class="grid-2" style="margin-top:16px">
+    <div class="card">
+      <div class="card-title"><span class="sec-num">4</span>애널리스트 컨센서스</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <div style="font-size:26px;font-weight:700">${d.target_mean}</div>
+        <div>
+          <span class="badge ${recBadge(d.recommendation)}">${d.recommendation}</span>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">분석가 ${d.analyst_count}명</div>
+        </div>
+      </div>
+      <table>
+        <tr><th>구분</th><th>목표주가</th></tr>
+        <tr><td>최고 목표가</td><td>${d.target_high}</td></tr>
+        <tr><td>평균 목표가</td><td>${d.target_mean}</td></tr>
+        <tr><td>최저 목표가</td><td>${d.target_low}</td></tr>
+        <tr><td>현재가</td><td>${d.current_price}</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="sec-num">4</span>주요 기관 보유 현황</div>
+      ${holdersHtml}
+    </div>
+  </div>
+
+  <!-- 뉴스 -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-title"><span class="sec-num">5</span>최신 뉴스 &amp; 모멘텀 (최신순 5건)</div>
+    <div class="news-list">${newsHtml}</div>
+  </div>
+
+  <div style="margin-top:20px;display:flex;justify-content:flex-end">
+    <button class="btn-dl" onclick="downloadMd()">📄 Markdown 리포트 저장</button>
+  </div>
+  `;
+
+  document.getElementById('report').style.display = 'block';
+  renderPriceChart(d.chart_data);
+  renderRsiChart(d.rsi_chart);
+  window.scrollTo({ top: document.getElementById('report').offsetTop - 20, behavior: 'smooth' });
+}
+
+function renderPriceChart(data) {
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  const labels = data.map(d => d.date);
+  const closes = data.map(d => d.close);
+  const period = 20, k = 2;
+  const bbU = [], bbM = [], bbL = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { bbU.push(null); bbM.push(null); bbL.push(null); continue; }
+    const s = closes.slice(i - period + 1, i + 1);
+    const m = s.reduce((a,b)=>a+b,0)/period;
+    const std = Math.sqrt(s.reduce((a,b)=>a+(b-m)**2,0)/period);
+    bbM.push(+m.toFixed(2)); bbU.push(+(m+k*std).toFixed(2)); bbL.push(+(m-k*std).toFixed(2));
+  }
+  chartInstances.price = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: '종가', data: closes, borderColor: '#4f8ef7', borderWidth: 2, pointRadius: 0, tension: 0.3, fill: false },
+      { label: 'BB 상단', data: bbU, borderColor: 'rgba(239,83,80,.5)', borderWidth: 1, pointRadius: 0, borderDash: [4,3], fill: false },
+      { label: 'BB 중앙', data: bbM, borderColor: 'rgba(255,255,255,.2)', borderWidth: 1, pointRadius: 0, borderDash: [2,2], fill: false },
+      { label: 'BB 하단', data: bbL, borderColor: 'rgba(38,166,154,.5)', borderWidth: 1, pointRadius: 0, borderDash: [4,3], fill: false },
+    ]},
+    options: {
+      responsive: true,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { color: '#7b82a0', font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color: '#7b82a0', maxTicksLimit: 10, font: { size: 11 } }, grid: { color: 'rgba(46,51,71,.4)' } },
+        y: { ticks: { color: '#7b82a0', font: { size: 11 } }, grid: { color: 'rgba(46,51,71,.4)' } }
+      }
+    }
+  });
+}
+
+function renderRsiChart(data) {
+  const ctx = document.getElementById('rsiChart').getContext('2d');
+  chartInstances.rsi = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.map(d => d.date),
+      datasets: [{ label: 'RSI', data: data.map(d => d.rsi), borderColor: '#7c6af7', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.3 }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#7b82a0', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(46,51,71,.3)' } },
+        y: { min: 0, max: 100, ticks: { color: '#7b82a0', font: { size: 10 }, stepSize: 25 }, grid: { color: 'rgba(46,51,71,.3)' } }
+      }
+    }
+  });
+}
+
+function downloadMd() {
+  const d = currentData; if (!d) return;
+  const sign = d.change_pct >= 0 ? '+' : '';
+  const md = `# Deep Stock Analysis: ${d.name} (${d.ticker})
+> 분석 기준: ${d.generated_at}
+
+---
+
+## 기본 정보
+
+| 항목 | 수치 |
+|------|------|
+| 현재가 | ${d.current_price} |
+| 당일 등락 | ${sign}${d.change_pct}% |
+| 시가총액 | ${d.market_cap} |
+| PER | ${d.pe_ratio} |
+| PBR | ${d.pb_ratio} |
+| 배당수익률 | ${d.dividend_yield} |
+| 52주 고가 | ${d.high_52w} |
+| 52주 저가 | ${d.low_52w} |
+
+---
+
+## 1. 기술적 지표
+
+### RSI
+- 현재 RSI: **${d.rsi}**
+- 신호: **${d.rsi_signal}**
+
+### 볼린저 밴드
+
+| 구분 | 가격 |
+|------|------|
+| 상단 밴드 | ${d.bb_upper} |
+| 중앙선 (MA20) | ${d.bb_mid} |
+| 하단 밴드 | ${d.bb_lower} |
+| 현재 위치 | **${d.bb_position}** |
+
+---
+
+## 2. 수급 및 거래량
+
+| 항목 | 수치 |
+|------|------|
+| 당일 거래량 | ${d.vol_today} |
+| 20일 평균 거래량 | ${d.vol_20avg} |
+| 평균 대비 | **${d.vol_ratio}배** |
+
+---
+
+## 3. 변동성 요약
+
+| 기간 | 등락률 |
+|------|--------|
+| 주간 (5거래일) | ${d.week_chg>=0?'+':''}${d.week_chg}% |
+| 월간 (22거래일) | ${d.month_chg>=0?'+':''}${d.month_chg}% |
+| 공매도 비율 | ${d.short_pct} |
+
+---
+
+## 4. 전문가 컨센서스
+
+| 구분 | 목표주가 |
+|------|---------|
+| 최고 목표가 | ${d.target_high} |
+| 평균 목표가 | ${d.target_mean} |
+| 최저 목표가 | ${d.target_low} |
+| 투자의견 | **${d.recommendation}** (${d.analyst_count}명) |
+
+---
+
+## 5. 최신 뉴스 (최신순 5건)
+
+${d.news.map((n,i) => `${i+1}. **${n.title}**\n   - 출처: ${n.publisher} | ${(n.published||'').substring(0,10)}\n   - ${n.url}`).join('\n\n')}
+
+---
+*Generated by DeepStock Analytics*
+`;
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `Deep_Stock_Analysis_${d.ticker}.md` });
+  a.click(); URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
