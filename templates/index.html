@@ -298,6 +298,7 @@ const acBox = document.getElementById('autocomplete');
 
 input.addEventListener('input', () => {
   clearTimeout(searchTimer);
+  selectedTicker = '';  // 입력 변경 시 이전 선택 티커 초기화
   const q = input.value.trim();
   if (!q) { hideAC(); return; }
   searchTimer = setTimeout(() => fetchAC(q), 220);
@@ -372,11 +373,34 @@ function quickSearch(q) {
   fetchAC(q);
 }
 
-function analyzeSelected() {
+async function analyzeSelected() {
   const raw = input.value.trim();
   if (!raw) return;
-  const ticker = selectedTicker || raw.toUpperCase().split(/\s/)[0];
-  runAnalyze(ticker);
+
+  // 자동완성에서 선택한 티커가 있으면 그대로 사용
+  if (selectedTicker) { runAnalyze(selectedTicker); return; }
+
+  // 없으면 검색 결과 첫 번째 EQUITY 항목 자동 선택
+  try {
+    const res = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: raw })
+    });
+    const items = await res.json();
+    if (items.length) {
+      const best = items[0];
+      selectedTicker = best.ticker;
+      input.value = `${best.name}  (${best.ticker})`;
+      hideAC();
+      runAnalyze(best.ticker);
+    } else {
+      // 검색 결과 없으면 입력값을 티커로 직접 시도
+      runAnalyze(raw.toUpperCase().split(/\s/)[0]);
+    }
+  } catch {
+    runAnalyze(raw.toUpperCase().split(/\s/)[0]);
+  }
 }
 
 /* ── 분석 실행 ── */
