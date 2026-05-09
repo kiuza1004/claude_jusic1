@@ -16,32 +16,19 @@ _NAVER_AC_HEADERS = {
 }
 
 
-def _has_korean(text: str) -> bool:
-    return bool(re.search(r"[\uac00-\ud7a3]", text))
+KR_TICKER_RE = re.compile(r"^\d{6}\.(KS|KQ)$")
 
 
 def _naver_to_yahoo_ticker(item: dict):
-    """Naver autoComplete item → Yahoo Finance 티커 형식으로 변환."""
+    """Naver autoComplete item → Yahoo 티커. 한국 KOSPI/KOSDAQ만 허용."""
     code = (item.get("code") or "").strip()
-    if not code:
+    if not code or not code.isdigit() or len(code) != 6:
         return None
     type_code = (item.get("typeCode") or "").upper()
     if type_code == "KOSPI":
         return f"{code}.KS"
     if type_code == "KOSDAQ":
         return f"{code}.KQ"
-    if type_code in ("NASDAQ", "NYSE", "NYSE_ARCA", "AMEX", "OTC"):
-        return code
-    if type_code == "HONG_KONG":
-        return f"{code.lstrip('0') or '0'}.HK"
-    if type_code in ("TOKYO", "OSAKA"):
-        return f"{code}.T"
-    if type_code == "LONDON":
-        return f"{code}.L"
-    if type_code in ("SHANGHAI",):
-        return f"{code}.SS"
-    if type_code in ("SHENZHEN",):
-        return f"{code}.SZ"
     return None
 
 
@@ -79,37 +66,14 @@ def _naver_search(query: str):
     return items
 
 
-def _yahoo_search(query: str):
-    try:
-        result = yf.Search(query, max_results=8, news_count=0)
-    except Exception:
-        return []
-    items = []
-    for q in (result.quotes or []):
-        if q.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND"):
-            items.append({
-                "ticker": q.get("symbol", ""),
-                "name": q.get("longname") or q.get("shortname") or "",
-                "exchange": q.get("exchDisp") or q.get("exchange") or "",
-                "type": q.get("typeDisp") or q.get("quoteType") or "",
-            })
-    return items
-
-
 @app.route("/api/search", methods=["POST"])
 def search():
     data = request.get_json()
     query = (data.get("query") or "").strip()
     if len(query) < 1:
         return jsonify([])
-
-    # 한글 → Naver, 영문/숫자 → Yahoo 우선. 빈 결과면 다른 소스로 fallback.
-    if _has_korean(query):
-        items = _naver_search(query) or _yahoo_search(query)
-    else:
-        items = _yahoo_search(query) or _naver_search(query)
-
-    return jsonify(items)
+    # 한국 KOSPI/KOSDAQ 종목만 노출
+    return jsonify(_naver_search(query))
 
 
 def calc_rsi(series, period=14):
@@ -130,6 +94,164 @@ def calc_bollinger(series, period=20, std_dev=2):
     return upper, mid, lower
 
 
+def _get_investor_trading(ticker: str):
+    """한국 주식(.KS/.KQ) 최근 5거래일 외국인/기관 순매매. 개인은 -(외+기) 추정."""
+    m = re.match(r"^(\d{6})\.(KS|KQ)$", ticker.upper())
+    if not m:
+        return []
+    code = m.group(1)
+    try:
+        r = requests.get(
+            f"https://finance.naver.com/item/frgn.naver?code={code}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        r.encoding = "euc-kr"
+        html = r.text
+    except Exception:
+        return []
+
+    table_m = re.search(
+        r'<table[^>]*summary="[^"]*외국인 기관 순매매[^"]*"[^>]*>(.*?)</table>',
+        html, re.S,
+    )
+    if not table_m:
+        return []
+    rows = re.findall(r"<tr onMouseOver[^>]*>(.*?)</tr>", table_m.group(1), re.S)
+
+    def to_int(s):
+        s = re.sub(r"<[^>]+>", "", s).strip().replace(",", "").replace("+", "")
+        try:
+            return int(s)
+        except ValueError:
+            return 0
+
+    items = []
+    for row in rows[:5]:
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
+        if len(cells) < 9:
+            continue
+        date = re.sub(r"<[^>]+>", "", cells[0]).strip()
+        if not date:
+            continue
+        close = to_int(cells[1])
+        volume = to_int(cells[4])
+        inst_net = to_int(cells[5])
+        foreign_net = to_int(cells[6])
+        individual_net = -(inst_net + foreign_net)
+        items.append({
+            "date": date,
+            "close": close,
+            "volume": volume,
+            "individual": individual_net,
+            "foreign": foreign_net,
+            "institutional": inst_net,
+        })
+    return items
+
+
+def _get_naver_news(ticker: str, limit: int = 5):
+    """Naver Finance 종목 뉴스 페이지 스크래핑 (한국어 뉴스)."""
+    m = KR_TICKER_RE.match(ticker.upper())
+    if not m:
+        return []
+    code = ticker.split(".")[0]
+    try:
+        r = requests.get(
+            "https://finance.naver.com/item/news_news.naver",
+            params={"code": code, "page": 1, "sm": "title_entity_id.basic", "clusterId": ""},
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
+            timeout=5,
+        )
+        r.encoding = "euc-kr"
+        html = r.text
+    except Exception:
+        return []
+
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S)
+    items = []
+    seen_ids = set()
+    for row in rows:
+        if "relation_lst" in row:
+            continue  # 연관 기사 묶음 제외
+        m_a = re.search(r'<a[^>]*href="(/item/news_read[^"]+)"[^>]*class="tit"[^>]*>(.*?)</a>', row, re.S)
+        if not m_a:
+            continue
+        href = m_a.group(1)
+        title = _unescape_html(re.sub(r"<[^>]+>", "", m_a.group(2)).strip())
+        m_office = re.search(r'class="info"[^>]*>(.*?)</td>', row, re.S)
+        m_date = re.search(r'class="date"[^>]*>(.*?)</td>', row, re.S)
+        office = re.sub(r"<[^>]+>", "", m_office.group(1)).strip() if m_office else ""
+        date = re.sub(r"<[^>]+>", "", m_date.group(1)).strip() if m_date else ""
+
+        ar_id = re.search(r"article_id=(\d+)", href)
+        of_id = re.search(r"office_id=(\d+)", href)
+        if not (ar_id and of_id):
+            continue
+        key = (of_id.group(1), ar_id.group(1))
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        url = f"https://n.news.naver.com/article/{of_id.group(1)}/{ar_id.group(1)}"
+
+        items.append({
+            "title": title,
+            "publisher": office,
+            "url": url,
+            "published": date,
+            "summary": "",
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _unescape_html(s: str) -> str:
+    return (s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+             .replace("&quot;", '"').replace("&#39;", "'").replace("&apos;", "'")
+             .replace("&hellip;", "…").replace("&lsquo;", "'").replace("&rsquo;", "'")
+             .replace("&ldquo;", '"').replace("&rdquo;", '"').replace("&nbsp;", " "))
+
+
+def _get_recent_dividends(tk, hist):
+    """최근 1년 배당 이벤트. 배당락일 기준, 시가배당률 계산."""
+    try:
+        divs = tk.dividends
+        if divs is None or divs.empty:
+            return []
+        tz = divs.index.tz
+        cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
+        recent = divs[divs.index >= cutoff]
+        if recent.empty:
+            return []
+
+        hist_close = hist["Close"]
+        if hist_close.index.tz is None and tz is not None:
+            divs_idx = recent.index.tz_localize(None)
+        else:
+            divs_idx = recent.index
+
+        items = []
+        for orig_dt, amount in zip(recent.index, recent.values):
+            lookup_dt = orig_dt.tz_localize(None) if (hist_close.index.tz is None and orig_dt.tz is not None) else orig_dt
+            try:
+                prev = hist_close[hist_close.index <= lookup_dt]
+                close_at = float(prev.iloc[-1]) if not prev.empty else None
+            except Exception:
+                close_at = None
+            yield_pct = (float(amount) / close_at * 100) if close_at else None
+            items.append({
+                "date": str(orig_dt.date()) if hasattr(orig_dt, "date") else str(orig_dt)[:10],
+                "amount": round(float(amount), 4),
+                "close_at": round(close_at, 2) if close_at else None,
+                "yield_pct": round(yield_pct, 3) if yield_pct else None,
+            })
+        items.sort(key=lambda x: x["date"], reverse=True)
+        return items
+    except Exception:
+        return []
+
+
 def get_stock_analysis(ticker: str):
     tk = yf.Ticker(ticker)
     info = tk.info
@@ -144,6 +266,13 @@ def get_stock_analysis(ticker: str):
 
     # 기본 정보
     name = info.get("longName") or info.get("shortName") or ticker
+    # 네이버에서 한글명 조회 (KOSPI/KOSDAQ 한정)
+    code = ticker.split(".")[0]
+    naver_results = _naver_search(code) if code.isdigit() else []
+    name_kr = next(
+        (r["name"] for r in naver_results if r["ticker"] == ticker.upper()),
+        None,
+    ) or name
     currency = info.get("currency", "")
     current_price = float(close.iloc[-1])
     prev_close = float(close.iloc[-2]) if len(close) > 1 else current_price
@@ -202,32 +331,8 @@ def get_stock_analysis(ticker: str):
     pb_ratio = info.get("priceToBook")
     dividend_yield = info.get("dividendYield")
 
-    # 최근 뉴스 (최신 날짜순 정렬 후 5개)
-    try:
-        news_raw = tk.news or []
-        news_parsed = []
-        for n in news_raw:
-            content = n.get("content", {})
-            pub_str = content.get("pubDate", "")
-            try:
-                pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
-            except Exception:
-                pub_dt = datetime.min.replace(tzinfo=timezone.utc)
-            news_parsed.append({
-                "title": content.get("title", ""),
-                "publisher": content.get("provider", {}).get("displayName", ""),
-                "url": content.get("canonicalUrl", {}).get("url", ""),
-                "published": pub_str,
-                "published_dt": pub_dt,
-                "summary": content.get("summary", ""),
-            })
-        news_parsed.sort(key=lambda x: x["published_dt"], reverse=True)
-        news = [
-            {k: v for k, v in item.items() if k != "published_dt"}
-            for item in news_parsed[:5]
-        ]
-    except Exception:
-        news = []
+    # 최근 뉴스 (Naver Finance — 국내 한국어 뉴스만)
+    news = _get_naver_news(ticker, limit=5)
 
     # 기관/외국인 수급 (미국주식은 institutional holders로 대체)
     try:
@@ -238,6 +343,10 @@ def get_stock_analysis(ticker: str):
             top_holders = []
     except Exception:
         top_holders = []
+
+    # 투자자별 매매동향 (한국 주식만) / 최근 1년 배당
+    investor_trading = _get_investor_trading(ticker)
+    dividends_recent = _get_recent_dividends(tk, hist)
 
     # 최근 20일 가격 데이터 (차트용)
     recent_20 = hist.tail(60).reset_index()
@@ -279,6 +388,7 @@ def get_stock_analysis(ticker: str):
     return {
         "ticker": ticker.upper(),
         "name": name,
+        "name_kr": name_kr,
         "currency": currency,
         "current_price": fmt_price(current_price),
         "change_pct": round(change_pct, 2),
@@ -312,6 +422,8 @@ def get_stock_analysis(ticker: str):
         "short_pct": f"{short_pct*100:.2f}%" if short_pct else "N/A",
         "top_holders": top_holders,
         "news": news,
+        "investor_trading": investor_trading,
+        "dividends_recent": dividends_recent,
         "chart_data": chart_data,
         "rsi_chart": rsi_chart,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -329,6 +441,8 @@ def analyze():
     ticker = (data.get("ticker") or "").strip().upper()
     if not ticker:
         return jsonify({"error": "티커를 입력하세요."}), 400
+    if not KR_TICKER_RE.match(ticker):
+        return jsonify({"error": "한국 KOSPI/KOSDAQ 종목만 지원합니다."}), 400
     result = get_stock_analysis(ticker)
     if "error" in result:
         return jsonify(result), 404

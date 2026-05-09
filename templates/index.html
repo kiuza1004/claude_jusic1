@@ -99,13 +99,31 @@
       white-space: nowrap;
     }
 
-    .examples { margin-top: 14px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-    .examples span {
+    /* 최근 조회 종목 */
+    .recent-wrap { margin-top: 18px; }
+    .recent-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .5px; }
+    .recent-list { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    .recent-chip {
+      display: inline-flex; align-items: center; gap: 6px;
       background: var(--surface2); border: 1px solid var(--border);
-      padding: 5px 14px; border-radius: 20px; font-size: 13px;
+      padding: 5px 6px 5px 14px; border-radius: 20px; font-size: 13px;
       cursor: pointer; color: var(--muted); transition: all .15s;
     }
-    .examples span:hover { border-color: var(--accent); color: var(--accent); }
+    .recent-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .recent-chip .rc-name { font-weight: 500; }
+    .recent-chip .rc-ticker { font-size: 11px; opacity: .75; }
+    .recent-chip .rc-x {
+      width: 16px; height: 16px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: rgba(255,255,255,.06); color: var(--muted); font-size: 12px;
+      transition: all .15s;
+    }
+    .recent-chip .rc-x:hover { background: var(--red); color: #fff; }
+    .recent-empty { color: var(--muted); font-size: 12px; opacity: .6; }
+
+    /* 투자자 매매동향 / 배당 색상 */
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
 
     #error-msg {
       max-width: 700px; margin: 20px auto;
@@ -254,13 +272,13 @@
 <header>
   <div>
     <div class="logo">Deep<span>Stock</span> Analytics</div>
-    <div class="logo-sub">실시간 데이터 기반 심층 주식 분석</div>
+    <div class="logo-sub">실시간 데이터 기반 한국 주식 심층 분석</div>
   </div>
 </header>
 
 <div class="search-wrap" id="search-section">
-  <h2>종목 심층 분석</h2>
-  <p>종목명 또는 티커를 입력하세요 (예: 테슬라, Tesla, TSLA, 삼성전자)</p>
+  <h2>한국 주식 심층 분석</h2>
+  <p>KOSPI / KOSDAQ 종목명 또는 코드를 입력하세요 (예: 삼성전자, 카카오, NAVER, 005930)</p>
   <div class="search-outer">
     <div class="search-box">
       <input type="text" id="ticker-input" placeholder="종목명 또는 티커 검색..." autocomplete="off" />
@@ -268,15 +286,9 @@
     </div>
     <div id="autocomplete"></div>
   </div>
-  <div class="examples">
-    <span onclick="quickSearch('Tesla')">테슬라</span>
-    <span onclick="quickSearch('Apple')">애플</span>
-    <span onclick="quickSearch('NVIDIA')">엔비디아</span>
-    <span onclick="quickSearch('삼성전자')">삼성전자</span>
-    <span onclick="quickSearch('SK하이닉스')">SK하이닉스</span>
-    <span onclick="quickSearch('NAVER')">네이버</span>
-    <span onclick="quickSearch('Microsoft')">마이크로소프트</span>
-    <span onclick="quickSearch('Meta')">메타</span>
+  <div class="recent-wrap">
+    <div class="recent-label">최근 조회 종목</div>
+    <div class="recent-list" id="recent-list"></div>
   </div>
 </div>
 
@@ -291,6 +303,44 @@ let chartInstances = {};
 let acItems = [];
 let acIndex = -1;
 let searchTimer = null;
+
+/* ── 최근 조회 종목 (localStorage) ── */
+const RECENT_KEY = 'recentStocks';
+const RECENT_MAX = 10;
+
+function loadRecent() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveRecent(list) {
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
+}
+function addRecent(ticker, name) {
+  if (!ticker) return;
+  const list = loadRecent().filter(x => x.ticker !== ticker);  // 중복 제거 (= "리스트에 포함된 내용 추가에서 제외")
+  list.unshift({ ticker, name });
+  saveRecent(list);
+  renderRecent();
+}
+function removeRecent(ticker) {
+  saveRecent(loadRecent().filter(x => x.ticker !== ticker));
+  renderRecent();
+}
+function renderRecent() {
+  const list = loadRecent();
+  const wrap = document.getElementById('recent-list');
+  if (!list.length) {
+    wrap.innerHTML = '<span class="recent-empty">아직 조회한 종목이 없습니다</span>';
+    return;
+  }
+  wrap.innerHTML = list.map(it => `
+    <span class="recent-chip" onclick="runAnalyze('${it.ticker.replace(/'/g, "\\'")}')">
+      <span class="rc-name">${it.name}</span>
+      <span class="rc-ticker">${it.ticker}</span>
+      <span class="rc-x" onclick="event.stopPropagation();removeRecent('${it.ticker.replace(/'/g, "\\'")}')" title="삭제">×</span>
+    </span>`).join('');
+}
+document.addEventListener('DOMContentLoaded', renderRecent);
 
 /* ── 자동완성 ── */
 const input = document.getElementById('ticker-input');
@@ -367,12 +417,6 @@ function selectAC(item) {
 
 function hideAC() { acBox.style.display = 'none'; }
 
-function quickSearch(q) {
-  input.value = q;
-  selectedTicker = '';
-  fetchAC(q);
-}
-
 async function analyzeSelected() {
   const raw = input.value.trim();
   if (!raw) return;
@@ -421,7 +465,14 @@ async function runAnalyze(ticker) {
     });
     const data = await res.json();
     if (data.error) showError(data.error);
-    else { currentData = data; renderReport(data); }
+    else {
+      currentData = data;
+      renderReport(data);
+      addRecent(data.ticker, data.name_kr || data.name);
+      input.value = '';
+      selectedTicker = '';
+      hideAC();
+    }
   } catch { showError('서버 오류가 발생했습니다. 다시 시도해주세요.'); }
   finally {
     document.getElementById('loading').style.display = 'none';
@@ -468,6 +519,38 @@ function renderReport(d) {
   const arrow = d.change_pct >= 0 ? '▲' : '▼';
   const vRatioPct = Math.min(d.vol_ratio * 50, 100);
   const vFillCls = d.vol_ratio >= 2 ? 'very-high' : d.vol_ratio >= 1.3 ? 'high' : '';
+
+  // 투자자별 매매동향 (한국 주식만)
+  const itHtml = d.investor_trading.length ? `
+    <table>
+      <tr><th>날짜</th><th>종가</th><th>외국인</th><th>기관</th><th>개인 (추정)</th></tr>
+      ${d.investor_trading.map(it => `
+      <tr>
+        <td style="font-size:12px">${it.date}</td>
+        <td>${it.close.toLocaleString()}</td>
+        <td class="${it.foreign>=0?'up':'down'}">${it.foreign>=0?'+':''}${it.foreign.toLocaleString()}</td>
+        <td class="${it.institutional>=0?'up':'down'}">${it.institutional>=0?'+':''}${it.institutional.toLocaleString()}</td>
+        <td class="${it.individual>=0?'up':'down'}">${it.individual>=0?'+':''}${it.individual.toLocaleString()}</td>
+      </tr>`).join('')}
+    </table>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">* 개인 = -(외국인+기관) 추정값. 단위: 주.</div>`
+  : '<div style="color:var(--muted);font-size:14px">매매동향 데이터를 가져올 수 없습니다.</div>';
+
+  // 최근 1년 배당
+  const fmtAmt = (a) => d.currency === 'KRW' ? `${Math.round(a).toLocaleString()} ${d.currency}` : `${a.toFixed(4)} ${d.currency}`;
+  const divHtml = d.dividends_recent.length ? `
+    <table>
+      <tr><th>배당락일</th><th>1주당 배당금</th><th>당시 종가</th><th>시가배당률</th></tr>
+      ${d.dividends_recent.map(it => `
+      <tr>
+        <td style="font-size:12px">${it.date}</td>
+        <td>${fmtAmt(it.amount)}</td>
+        <td>${it.close_at != null ? it.close_at.toLocaleString() + ' ' + d.currency : '-'}</td>
+        <td>${it.yield_pct != null ? it.yield_pct + '%' : '-'}</td>
+      </tr>`).join('')}
+    </table>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">* 시가배당률 = 1주당 배당금 / 배당락일 직전 종가</div>`
+  : '<div style="color:var(--muted);font-size:14px">최근 1년간 배당 이력이 없습니다.</div>';
 
   const newsHtml = d.news.length ? d.news.map((n, i) => `
     <div class="news-item">
@@ -614,9 +697,21 @@ function renderReport(d) {
     </div>
   </div>
 
+  <!-- 투자자 매매동향 + 배당 -->
+  <div class="grid-2" style="margin-top:16px">
+    <div class="card">
+      <div class="card-title"><span class="sec-num">5</span>투자자별 매매동향 (최근 5거래일)</div>
+      ${itHtml}
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="sec-num">5</span>배당 이력 (최근 1년)</div>
+      ${divHtml}
+    </div>
+  </div>
+
   <!-- 뉴스 -->
   <div class="card" style="margin-top:16px">
-    <div class="card-title"><span class="sec-num">5</span>최신 뉴스 &amp; 모멘텀 (최신순 5건)</div>
+    <div class="card-title"><span class="sec-num">6</span>최신 뉴스 &amp; 모멘텀 (최신순 5건)</div>
     <div class="news-list">${newsHtml}</div>
   </div>
 
