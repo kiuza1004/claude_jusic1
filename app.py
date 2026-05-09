@@ -3,9 +3,97 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
+import requests
 import json
+import re
 
 app = Flask(__name__)
+
+_NAVER_AC_URL = "https://m.stock.naver.com/front-api/search/autoComplete"
+_NAVER_AC_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://m.stock.naver.com/",
+}
+
+
+def _has_korean(text: str) -> bool:
+    return bool(re.search(r"[\uac00-\ud7a3]", text))
+
+
+def _naver_to_yahoo_ticker(item: dict):
+    """Naver autoComplete item → Yahoo Finance 티커 형식으로 변환."""
+    code = (item.get("code") or "").strip()
+    if not code:
+        return None
+    type_code = (item.get("typeCode") or "").upper()
+    if type_code == "KOSPI":
+        return f"{code}.KS"
+    if type_code == "KOSDAQ":
+        return f"{code}.KQ"
+    if type_code in ("NASDAQ", "NYSE", "NYSE_ARCA", "AMEX", "OTC"):
+        return code
+    if type_code == "HONG_KONG":
+        return f"{code.lstrip('0') or '0'}.HK"
+    if type_code in ("TOKYO", "OSAKA"):
+        return f"{code}.T"
+    if type_code == "LONDON":
+        return f"{code}.L"
+    if type_code in ("SHANGHAI",):
+        return f"{code}.SS"
+    if type_code in ("SHENZHEN",):
+        return f"{code}.SZ"
+    return None
+
+
+def _naver_search(query: str):
+    try:
+        r = requests.get(
+            _NAVER_AC_URL,
+            params={"query": query, "target": "stock,index,marketindicator,coin,ipo"},
+            headers=_NAVER_AC_HEADERS,
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return []
+        items_raw = ((r.json().get("result") or {}).get("items")) or []
+    except Exception:
+        return []
+
+    items = []
+    seen = set()
+    for it in items_raw:
+        if (it.get("category") or "stock") != "stock":
+            continue
+        ticker = _naver_to_yahoo_ticker(it)
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        items.append({
+            "ticker": ticker,
+            "name": it.get("name", ""),
+            "exchange": it.get("typeName") or it.get("typeCode") or "",
+            "type": "Equity",
+        })
+        if len(items) >= 8:
+            break
+    return items
+
+
+def _yahoo_search(query: str):
+    try:
+        result = yf.Search(query, max_results=8, news_count=0)
+    except Exception:
+        return []
+    items = []
+    for q in (result.quotes or []):
+        if q.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND"):
+            items.append({
+                "ticker": q.get("symbol", ""),
+                "name": q.get("longname") or q.get("shortname") or "",
+                "exchange": q.get("exchDisp") or q.get("exchange") or "",
+                "type": q.get("typeDisp") or q.get("quoteType") or "",
+            })
+    return items
 
 
 @app.route("/api/search", methods=["POST"])
@@ -14,20 +102,14 @@ def search():
     query = (data.get("query") or "").strip()
     if len(query) < 1:
         return jsonify([])
-    try:
-        result = yf.Search(query, max_results=8, news_count=0)
-        items = []
-        for q in (result.quotes or []):
-            if q.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND"):
-                items.append({
-                    "ticker": q.get("symbol", ""),
-                    "name": q.get("longname") or q.get("shortname") or "",
-                    "exchange": q.get("exchDisp") or q.get("exchange") or "",
-                    "type": q.get("typeDisp") or q.get("quoteType") or "",
-                })
-        return jsonify(items)
-    except Exception:
-        return jsonify([])
+
+    # 한글 → Naver, 영문/숫자 → Yahoo 우선. 빈 결과면 다른 소스로 fallback.
+    if _has_korean(query):
+        items = _naver_search(query) or _yahoo_search(query)
+    else:
+        items = _yahoo_search(query) or _naver_search(query)
+
+    return jsonify(items)
 
 
 def calc_rsi(series, period=14):
